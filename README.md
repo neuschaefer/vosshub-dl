@@ -5,7 +5,9 @@ vosshub-dl is a tool to download files from <http://vosshub.com>.
 
 ## Usage
 
-TODO
+```
+./vosshub-dl --search 'XH20A101' --resolve-all --download-all --create-symlinks
+```
 
 
 ## Theory of operation
