@@ -1,0 +1,82 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: MIT
+import os, sys, argparse
+import requests, bs4
+import sqlite3
+
+BASE_URL = 'http://vosshub.com'
+
+# Open and initialize the database
+def init_db(filename):
+    db = sqlite3.connect(filename)
+    with open(os.path.dirname(__file__) + '/schema.sql', 'r') as f:
+        schema = f.read()
+        c = db.cursor()
+        c.executescript(schema)
+        db.commit()
+    return db
+
+
+# Insert a row into the 'models' table, and return its id
+def insert_model(db, category, brand, model):
+    c = db.cursor()
+    c.execute('INSERT OR IGNORE INTO models (category, brand, model) VALUES (?, ?, ?)',
+              (category, brand, model))
+    c.execute('SELECT id FROM models WHERE category=? AND brand=? AND model=?',
+              (category, brand, model))
+    ids = c.fetchall()
+    db.commit()
+    assert len(ids) == 1
+    id = ids[0][0]
+    print(f'MODEL {id}: {category},   {brand},  {model}')
+    return id
+
+# Insert multiple rows of (modelid, fileid, productid, name) into the 'downloads' table
+def insert_downloads(db, rows):
+    c = db.cursor()
+    c.executemany('INSERT OR IGNORE INTO downloads (modelid, fileid, productid, name) VALUES (?, ?, ?, ?)', rows)
+    db.commit()
+
+# Search for a search string and save the result to the database
+def search(db, searchstring):
+    r = requests.get(BASE_URL + '/products/search/' + searchstring)
+    r.close()
+    assert r.status_code == 200
+
+    soup = bs4.BeautifulSoup(r.content, 'html.parser')
+    table = soup.div.table
+    columns = [x.text for x in soup.div.table.thead.tr.findAll('th')]
+    assert columns == ['Category', 'Brand', 'Model', 'Source Code']
+
+    for tr in table.tbody.findAll('tr'):
+        td = tr.findAll('td')
+        category = td[0].text
+        brand = td[1].text
+        model = td[2].text
+        modelid = insert_model(db, category, brand, model)
+
+        downloads = []
+        for a in td[3].findAll('a'):
+            fileid = a.attrs['data-file']
+            productid = a.attrs['data-product']
+            name = a.text
+            downloads.append((modelid, fileid, productid, name))
+        insert_downloads(db, downloads)
+
+
+# Main function
+def main():
+    parser = argparse.ArgumentParser(description='VossHub downloader')
+    parser.add_argument('--database', help='sqlite3 database file to use', default='vosshub-dl.sqlite')
+    parser.add_argument('--search', help='search for a particular string')
+    args = parser.parse_args()
+
+    db = init_db(args.database)
+
+    if args.search != None:
+        search(db, args.search)
+
+    db.close()
+
+if __name__ == '__main__':
+    main()
