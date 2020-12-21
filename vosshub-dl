@@ -1,8 +1,9 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: MIT
-import os, sys, argparse
+import os, sys, argparse, time, re
 import requests, bs4
 import sqlite3
+import subprocess
 
 BASE_URL = 'http://vosshub.com'
 
@@ -35,6 +36,11 @@ def insert_model(db, category, brand, model):
 def insert_downloads(db, rows):
     c = db.cursor()
     c.executemany('INSERT OR IGNORE INTO downloads (modelid, fileid, productid, name) VALUES (?, ?, ?, ?)', rows)
+
+    # Ensure that there is a row in the files table for every fileid
+    fileids = [(f,) for m,f,p,n in rows]
+    c.executemany('INSERT OR IGNORE INTO files (id) VALUES (?)', fileids)
+
     db.commit()
 
 # Search for a search string and save the result to the database
@@ -53,6 +59,8 @@ def search(db, searchstring):
         category = td[0].text
         brand = td[1].text
         model = td[2].text
+        if not category and not brand and not model:
+            continue
         modelid = insert_model(db, category, brand, model)
 
         downloads = []
@@ -64,17 +72,152 @@ def search(db, searchstring):
         insert_downloads(db, downloads)
 
 
+# List all known files
+def list_files(db):
+    c = db.cursor()
+    c.execute('SELECT DISTINCT fileid, name, files.location FROM downloads JOIN files on fileid=files.id ORDER BY name, fileid')
+    for fileid, name, location in c.fetchall():
+        if not location:
+            print(f'{name}')
+        else:
+            print(f'{name}')
+            print(f'    {BASE_URL + location}')
+
+
+def do_resolve(fileid, productid):
+    r = requests.post(BASE_URL + '/products/search/',
+            f'form[purpose]=1&form[product]={productid}&form[file]={fileid}',
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            allow_redirects=False)
+    r.close()
+    if r.status_code == 301:
+        return r.headers['Location']
+    else:
+        print(f'File {fileid}, product {productid} failed to resolve with HTTP status {r.status_code}')
+        print(r.content)
+
+
+def save_location(db, fileid, location):
+    c = db.cursor()
+    c.execute('UPDATE files SET location=? WHERE id=?', (location, fileid))
+    db.commit()
+
+
+# Resolve a filename to a download location
+def resolve(db, name):
+    c = db.cursor()
+    c.execute('SELECT fileid, productid FROM downloads WHERE name=?', (name,))
+    for fileid, productid in c.fetchall():
+        location = do_resolve(fileid, productid)
+        if location:
+            print(fileid, productid, location)
+            save_location(db, fileid, location)
+            break
+
+
+# Resolve the location of every file
+def resolve_all(db):
+    # For every fileid of which the location is unknown, find a matching
+    # productid and a name
+    c = db.cursor()
+    c.execute('SELECT files.id, downloads.productid, downloads.name FROM files \
+               JOIN downloads ON files.id=downloads.fileid \
+               WHERE location IS NULL \
+               GROUP BY files.id')
+    for fileid, productid, name in c.fetchall():
+        location = do_resolve(fileid, productid)
+        if location:
+            print(fileid, productid, location)
+            save_location(db, fileid, location)
+
+        # Don't send requests too quickly, to avoid internal server errors
+        time.sleep(10)
+
+
+
+# Download all files
+def download_all(db, output):
+    # Create output directory
+    os.makedirs(output + '/files', exist_ok=True)
+
+    # Get file list
+    c = db.cursor()
+    c.execute('SELECT location FROM files WHERE location IS NOT NULL')
+
+    for location, in c.fetchall():
+        assert location.startswith('/files/')
+        filename = location[7:]
+        assert filename != '..'
+        assert '/' not in filename
+        filename = f'{output}/files/{filename}'
+
+        # Download
+        if not os.path.exists(filename):
+            subprocess.run(['wget', '-c', BASE_URL + location, '-O' + filename])
+
+
+def sanitize_name(name):
+    if name == '..':
+        return '__'
+    return name.replace('/', '_')
+
+
+# Create symlinks for all files, in the format:
+#   Category/Brand/Model/filename.ext
+def create_symlinks(db, output):
+    location_re = re.compile('^/files/[0-9a-f]{32}\.(.*)$')
+    c = db.cursor()
+    it = c.execute('SELECT category, brand, model, name, location FROM downloads \
+                    JOIN models on modelid=models.id \
+                    JOIN files on fileid=files.id')
+    for category, brand, model, name, location in it:
+        d = f'{output}/{sanitize_name(category)}/{sanitize_name(brand)}/{sanitize_name(model)}'
+        os.makedirs(d, exist_ok=True)
+
+        filename = sanitize_name(name)
+
+        match = location_re.match(location)
+        if match:
+            # Append the location's file extension
+            filename += '.' + match.group(1)
+            if not os.path.exists(f'{d}/{filename}'):
+                os.symlink(f'../../../{location}', f'{d}/{filename}')
+        else:
+            print(f'Unusual location: {location}')
+
+
 # Main function
 def main():
     parser = argparse.ArgumentParser(description='VossHub downloader')
     parser.add_argument('--database', help='sqlite3 database file to use', default='vosshub-dl.sqlite')
+    parser.add_argument('--output', help='where to store downloaded files', default='data')
     parser.add_argument('--search', help='search for a particular string')
+    parser.add_argument('--list-files', help='list all known files along with their IDs', action='store_true')
+    parser.add_argument('--resolve', help='resolve a filename to a download URL')
+    parser.add_argument('--resolve-all', help='resolve all unresolved filenames to download URLs', action='store_true')
+    parser.add_argument('--download-all', help='download all files', action='store_true')
+    parser.add_argument('--create-symlinks', help='create symbolic links', action='store_true')
     args = parser.parse_args()
 
     db = init_db(args.database)
 
     if args.search != None:
         search(db, args.search)
+
+    if args.list_files:
+        list_files(db)
+
+    if args.resolve != None:
+        resolve(db, args.resolve)
+
+    if args.resolve_all:
+        resolve_all(db)
+
+    if args.download_all:
+        download_all(db, args.output)
+
+    if args.create_symlinks:
+        create_symlinks(db, args.output)
 
     db.close()
 

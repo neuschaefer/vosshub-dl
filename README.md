@@ -59,3 +59,7 @@ Downloading a file from VossHub involves the following steps:
 
 - **Downloading the file**: With knowledge of the file URL from the previous
   step, it can be downloaded at any time.
+
+  Note that in order to generate a good name, the name displayed on the search
+  result page (for example _sha2_) and the extension of the download location
+  (_/files/ca32d8295b1f37a8bf558b72ea3360df.7z_) can be combined.
