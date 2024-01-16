@@ -1,4 +1,5 @@
 -- SPDX-License-Identifier: MIT
+-- Copyright (C) 2020  J. Neuschäfer
 
 -- Models, the primary results in the search page
 CREATE TABLE IF NOT EXISTS models (

@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: MIT -->
+<!-- Copyright (C) 2020  J. Neuschäfer -->
+
 # vosshub-dl
 
 vosshub-dl is a tool to download files from <http://vosshub.com>.

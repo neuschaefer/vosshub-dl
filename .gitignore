@@ -1,2 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2020  J. Neuschäfer
+
 *.sqlite
 /data/
